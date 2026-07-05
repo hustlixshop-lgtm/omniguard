@@ -1,0 +1,197 @@
+{
+  "name": "omniguard",
+  "displayName": "OmniGuard - AI Security Scanner",
+  "description": "Real-time AI-powered security scanning for your code. Detect secrets, vulnerabilities, and misconfigurations before they reach production.",
+  "version": "1.0.0",
+  "publisher": "omniguard",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Security",
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "security",
+    "vulnerability",
+    "secrets",
+    "SAST",
+    "AI",
+    "Claude",
+    "DevSecOps"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "omniguard.scanCurrentFile",
+        "title": "OmniGuard: Scan Current File"
+      },
+      {
+        "command": "omniguard.scanWorkspace",
+        "title": "OmniGuard: Scan Workspace"
+      },
+      {
+        "command": "omniguard.showDashboard",
+        "title": "OmniGuard: Show Dashboard"
+      },
+      {
+        "command": "omniguard.login",
+        "title": "OmniGuard: Login"
+      },
+      {
+        "command": "omniguard.logout",
+        "title": "OmniGuard: Logout"
+      },
+      {
+        "command": "omniguard.openConnectionSettings",
+        "title": "OmniGuard: Connection Settings"
+      },
+      {
+        "command": "omniguard.suppressFinding",
+        "title": "OmniGuard: Suppress Finding"
+      },
+      {
+        "command": "omniguard.openInDashboard",
+        "title": "OmniGuard: Open in Dashboard"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "omniguard.submenu",
+          "group": "omniguard"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "omniguard.submenu",
+        "label": "OmniGuard"
+      }
+    ],
+    "views": {
+      "omniguard-sidebar": [
+        {
+          "id": "omniguard.findings",
+          "name": "Findings"
+        },
+        {
+          "id": "omniguard.summary",
+          "name": "Summary"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "omniguard-sidebar",
+          "title": "OmniGuard",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OmniGuard",
+      "properties": {
+        "omniguard.apiEndpoint": {
+          "type": "string",
+          "default": "https://api.omniguard.io",
+          "description": "OmniGuard API endpoint URL"
+        },
+        "omniguard.enableRealtimeScanning": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable real-time scanning on file save"
+        },
+        "omniguard.scanOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan files automatically when saved"
+        },
+        "omniguard.aiEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-powered security analysis"
+        },
+        "omniguard.aiModel": {
+          "type": "string",
+          "default": "haiku",
+          "enum": ["haiku", "sonnet", "opus"],
+          "description": "AI model to use for analysis"
+        },
+        "omniguard.failOn": {
+          "type": "string",
+          "default": "high",
+          "enum": ["critical", "high", "medium", "low", "none"],
+          "description": "Minimum severity level to fail"
+        },
+        "omniguard.excludePatterns": {
+          "type": "array",
+          "default": ["node_modules/**", "dist/**", "build/**", "**/*.min.js"],
+          "description": "Glob patterns to exclude from scanning"
+        },
+        "omniguard.enabledScanners": {
+          "type": "array",
+          "default": ["secret", "sast", "iac", "dependency"],
+          "enum": ["secret", "sast", "iac", "dependency", "container"],
+          "description": "Enabled scanner types"
+        },
+        "omniguard.showInlineDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline diagnostics for findings"
+        },
+        "omniguard.maxFindingsToDisplay": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum findings to display in Problems panel"
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "omniguard-sarif",
+        "extensions": [".sarif"],
+        "aliases": ["SARIF"]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.3",
+    "@supabase/supabase-js": "^2.45.0",
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.6.0",
+    "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omniguard/vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/omniguard/vscode-extension/issues"
+  }
+}
