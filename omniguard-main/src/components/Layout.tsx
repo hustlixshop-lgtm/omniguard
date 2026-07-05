@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { Shield, LayoutDashboard, GitBranch, TriangleAlert as AlertTriangle, Users, Settings, LogOut, Bell, ChevronDown, Search, Building2, Plus, X } from 'lucide-react'
+import { Shield, ShieldCheck, Play, FileText, LayoutDashboard, GitBranch, TriangleAlert as AlertTriangle, Users, Settings, LogOut, Bell, ChevronDown, Search, Building2, Plus, X } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useOrganizations } from '../hooks/useOrganization'
 import { useUnreadNotifications } from '../hooks/useAnalytics'
@@ -12,7 +12,11 @@ const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/repositories', icon: GitBranch, label: 'Repositories' },
   { path: '/findings', icon: AlertTriangle, label: 'Findings' },
+  { path: '/scans', icon: Play, label: 'Scans' },
+  { path: '/policies', icon: Shield, label: 'Policies' },
+  { path: '/compliance', icon: ShieldCheck, label: 'Compliance' },
   { path: '/teams', icon: Users, label: 'Teams' },
+  { path: '/audit-logs', icon: FileText, label: 'Audit Logs' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
