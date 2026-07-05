@@ -34,7 +34,7 @@ interface Finding {
   updated_at: string;
 }
 
-async function verifyApiKey(authHeader: string | null): Promise<{ valid: boolean; organizationId?: string }> {
+async function verifyApiKey(authHeader: string | null): Promise<{ valid: boolean; organizationId?: string; userId?: string }> {
   if (!authHeader?.startsWith("Bearer ")) {
     return { valid: false };
   }
@@ -62,7 +62,8 @@ async function verifyApiKey(authHeader: string | null): Promise<{ valid: boolean
 
       return {
         valid: true,
-        organizationId: membership?.organization_id
+        organizationId: membership?.organization_id,
+        userId: user.id
       };
     } catch {
       return { valid: false };
@@ -256,6 +257,139 @@ Deno.serve(async (req: Request) => {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
+    }
+
+    // POST /findings/:id/suppress
+    if (req.method === "POST" && path.match(/^\/[a-f0-9-]+\/suppress$/)) {
+      const findingId = path.split("/")[1];
+      const body = await req.json().catch(() => ({}));
+      const reason = body.reason?.slice(0, 500);
+
+      if (!reason) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: { code: "BAD_REQUEST", message: "reason is required" }
+        }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: finding, error: fetchErr } = await supabase
+        .from("findings")
+        .select("id, status")
+        .eq("id", findingId)
+        .eq("organization_id", orgId)
+        .maybeSingle();
+
+      if (fetchErr || !finding) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Finding not found" }
+        }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: updated, error: updateErr } = await supabase
+        .from("findings")
+        .update({
+          status: "suppressed",
+          suppressed_by: authResult.userId || null,
+          suppressed_at: new Date().toISOString(),
+          suppress_reason: reason,
+        })
+        .eq("id", findingId)
+        .eq("organization_id", orgId)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+
+      return new Response(JSON.stringify({ success: true, data: updated }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // GET /findings/:id/ai-remediation — get or generate AI remediation for a finding
+    if (req.method === "GET" && path.match(/^\/[a-f0-9-]+\/ai-remediation$/)) {
+      const findingId = path.split("/")[1];
+
+      const { data: finding, error: fetchErr } = await supabase
+        .from("findings")
+        .select("id, title, description, evidence, severity, rule_id, rule_name, file_path, line_start, ai_remediation, remediation")
+        .eq("id", findingId)
+        .eq("organization_id", orgId)
+        .maybeSingle();
+
+      if (fetchErr || !finding) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Finding not found" }
+        }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // Return cached AI remediation if available
+      if (finding.ai_remediation) {
+        return new Response(JSON.stringify({
+          success: true,
+          data: { finding_id: findingId, ai_remediation: finding.ai_remediation, remediation: finding.remediation, cached: true }
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // Generate AI remediation on demand
+      const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+      if (!anthropicKey) {
+        return new Response(JSON.stringify({
+          success: true,
+          data: { finding_id: findingId, ai_remediation: null, remediation: finding.remediation, cached: false, reason: "AI not configured" }
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      try {
+        const aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+          body: JSON.stringify({
+            model: "claude-3-5-sonnet-20241022",
+            max_tokens: 1000,
+            messages: [{
+              role: "user",
+              content: `You are a security expert. Provide a concise remediation for this vulnerability.
+
+Finding: ${finding.title}
+Severity: ${finding.severity}
+Rule: ${finding.rule_name}
+File: ${finding.file_path}:${finding.line_start}
+Description: ${finding.description}
+Evidence: ${finding.evidence}
+
+Provide:
+1. What is wrong and why it's dangerous
+2. Step-by-step fix with code example
+3. Testing suggestion
+
+Keep it under 600 words.`,
+            }],
+          }),
+          signal: AbortSignal.timeout(25_000),
+        });
+
+        let aiRemediation: string | null = null;
+        if (aiResponse.ok) {
+          const aiData = await aiResponse.json();
+          aiRemediation = aiData.content?.[0]?.text || null;
+          if (aiRemediation) {
+            await supabase.from("findings").update({ ai_remediation: aiRemediation }).eq("id", findingId);
+          }
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          data: { finding_id: findingId, ai_remediation: aiRemediation, remediation: finding.remediation, cached: false }
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch {
+        return new Response(JSON.stringify({
+          success: true,
+          data: { finding_id: findingId, ai_remediation: null, remediation: finding.remediation, cached: false }
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
     }
 
     return new Response(JSON.stringify({

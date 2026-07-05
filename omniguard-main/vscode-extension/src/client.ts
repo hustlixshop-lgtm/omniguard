@@ -8,86 +8,101 @@ export class OmniGuardClient {
 
   constructor(authManager: AuthManager) {
     this.authManager = authManager;
-    this.endpoint = vscode.workspace.getConfiguration('omniguard').get<string>('apiEndpoint') || 'https://api.omniguard.io';
+    // endpoint should be the Supabase functions URL, e.g.:
+    // https://your-project.supabase.co/functions/v1
+    this.endpoint = vscode.workspace.getConfiguration('omniguard').get<string>('apiEndpoint') || '';
   }
 
   private async getHeaders(): Promise<Record<string, string>> {
-    const token = await this.authManager.getToken();
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      'X-API-Key': await this.authManager.getApiKey() || ''
-    };
+    let token: string | undefined;
+    try {
+      token = await this.authManager.getToken();
+    } catch {
+      // Not authenticated — try API key only
+    }
+    const apiKey = await this.authManager.getApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    else if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    return headers;
   }
 
   async scanFile(filePath: string, content: string): Promise<ScanResult> {
+    if (!this.endpoint) return this.localScan(filePath, content);
+
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.endpoint}/scan/file`, {
+      const response = await fetch(`${this.endpoint}/scan-quick`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ filePath, content, quick: false })
+        body: JSON.stringify({ path: filePath, content, ai: false }),
+        signal: AbortSignal.timeout(30_000),
       });
 
-      if (!response.ok) {
-        throw new Error(`Scan failed: ${response.statusText}`);
-      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      return await response.json() as ScanResult;
+      const data = await response.json() as {
+        findings: Finding[];
+        summary: ScanResult['summary'];
+      };
+      return { findings: data.findings || [], summary: data.summary || { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 } };
     } catch (error) {
-      console.error('Scan failed:', error);
-      // Fallback to local scanning if available
+      console.error('Remote scan failed, using local scanner:', error);
       return this.localScan(filePath, content);
     }
   }
 
   async quickClassify(filePath: string, content: string): Promise<'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'> {
+    if (!this.endpoint) return 'LOW';
+
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.endpoint}/scan/classify`, {
+      const response = await fetch(`${this.endpoint}/scan-quick`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ filePath, content })
+        body: JSON.stringify({ path: filePath, content, ai: false }),
+        signal: AbortSignal.timeout(10_000),
       });
 
-      if (!response.ok) {
-        return 'LOW'; // Default to LOW on error
-      }
+      if (!response.ok) return 'LOW';
 
       const result = await response.json() as { classification: string };
-      return result.classification as 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+      return (result.classification as 'SAFE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL') || 'LOW';
     } catch {
       return 'LOW';
     }
   }
 
-  async getRemediation(findingId: string): Promise<{ fixed_code: string; explanation: string } | null> {
+  async getRemediation(findingId: string): Promise<{ ai_remediation: string | null; remediation: string | null } | null> {
+    if (!this.endpoint) return null;
+
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.endpoint}/findings/${findingId}/remediation`, {
+      const response = await fetch(`${this.endpoint}/api-v1-findings/${findingId}/ai-remediation`, {
         method: 'GET',
-        headers
+        headers,
+        signal: AbortSignal.timeout(30_000),
       });
 
-      if (!response.ok) {
-        return null;
-      }
-
-      return await response.json();
+      if (!response.ok) return null;
+      const result = await response.json() as { data: { ai_remediation: string | null; remediation: string | null } };
+      return result.data || null;
     } catch {
       return null;
     }
   }
 
   async suppressFinding(findingId: string, reason: string): Promise<boolean> {
+    if (!this.endpoint) return false;
+
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.endpoint}/findings/${findingId}/suppress`, {
+      const response = await fetch(`${this.endpoint}/api-v1-findings/${findingId}/suppress`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ reason })
+        body: JSON.stringify({ reason }),
+        signal: AbortSignal.timeout(10_000),
       });
-
       return response.ok;
     } catch {
       return false;
@@ -95,47 +110,47 @@ export class OmniGuardClient {
   }
 
   private async localScan(filePath: string, content: string): Promise<ScanResult> {
-    // Embedded local scanner for offline/fallback mode
     const findings: Finding[] = [];
 
-    // Simple secret detection
-    const secretPatterns = [
-      { pattern: /(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}/g, name: 'AWS Access Key', severity: 'critical' as const },
-      { pattern: /ghp_[A-Za-z0-9]{36}/g, name: 'GitHub Personal Access Token', severity: 'critical' as const },
-      { pattern: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g, name: 'OpenAI API Key', severity: 'critical' as const },
-      { pattern: /sk-ant-[A-Za-z0-9\-_]{95}/g, name: 'Anthropic API Key', severity: 'critical' as const },
-      { pattern: /password\s*=\s*["'][^"']{8,}["']/gi, name: 'Hardcoded Password', severity: 'high' as const },
+    const secretPatterns: Array<{ pattern: RegExp; name: string; severity: 'critical' | 'high' | 'medium' | 'low' | 'info' }> = [
+      { pattern: /(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}/g, name: 'AWS Access Key', severity: 'critical' },
+      { pattern: /gh[pousr]_[A-Za-z0-9]{36}/g, name: 'GitHub PAT', severity: 'critical' },
+      { pattern: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g, name: 'OpenAI API Key', severity: 'critical' },
+      { pattern: /sk-ant-[A-Za-z0-9\-_]{95}/g, name: 'Anthropic API Key', severity: 'critical' },
+      { pattern: /(?:password|passwd|pwd)\s*[:=]\s*["']([^"'\s]{8,})["']/gi, name: 'Hardcoded Password', severity: 'high' },
     ];
 
     const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      for (const { pattern, name, severity } of secretPatterns) {
-        const matches = line.matchAll(pattern);
-        for (const match of matches) {
-          findings.push({
-            id: Buffer.from(`${filePath}:${i}:${match[0]}`).toString('base64').slice(0, 36),
-            scanner: 'secret',
-            category: name,
-            severity,
-            title: `${name} detected`,
-            description: `Potential ${name.toLowerCase()} found in code.`,
-            file_path: filePath,
-            line_start: i + 1,
-            line_end: i + 1,
-            rule_id: 'SECRET-LOCAL-001',
-            rule_name: name,
-            evidence: this.maskSecret(match[0]),
-            owasp: ['A07:2021'],
-            cwe: ['CWE-798'],
-            mitre: [],
-            confidence_score: 0.8,
-            false_positive_likelihood: 0.1,
-            status: 'open',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-        }
+    for (const { pattern, name, severity } of secretPatterns) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(content)) !== null) {
+        const lineNum = content.substring(0, match.index).split('\n').length;
+        const lineContent = lines[lineNum - 1]?.trim() || '';
+        if (/^\s*(\/\/|#|\*)/.test(lineContent)) continue;
+
+        findings.push({
+          id: Buffer.from(`${filePath}:${lineNum}:${name}`).toString('base64').slice(0, 36),
+          scanner: 'secret',
+          category: name,
+          severity,
+          title: `${name} detected`,
+          description: `Potential ${name.toLowerCase()} found in source code.`,
+          file_path: filePath,
+          line_start: lineNum,
+          line_end: lineNum,
+          rule_id: 'SECRET-LOCAL',
+          rule_name: name,
+          evidence: match[0].slice(0, 4) + '****' + match[0].slice(-4),
+          owasp: ['A07:2021'],
+          cwe: ['CWE-798'],
+          mitre: [],
+          confidence_score: 0.8,
+          false_positive_likelihood: 0.1,
+          status: 'open',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
       }
     }
 
@@ -143,19 +158,12 @@ export class OmniGuardClient {
       findings,
       summary: {
         total: findings.length,
-        critical: findings.filter(f => f.severity === 'critical').length,
-        high: findings.filter(f => f.severity === 'high').length,
-        medium: findings.filter(f => f.severity === 'medium').length,
-        low: findings.filter(f => f.severity === 'low').length,
-        info: findings.filter(f => f.severity === 'info').length
-      }
+        critical: findings.filter((f) => f.severity === 'critical').length,
+        high: findings.filter((f) => f.severity === 'high').length,
+        medium: findings.filter((f) => f.severity === 'medium').length,
+        low: findings.filter((f) => f.severity === 'low').length,
+        info: findings.filter((f) => f.severity === 'info').length,
+      },
     };
-  }
-
-  private maskSecret(value: string): string {
-    if (value.length <= 8) {
-      return '*'.repeat(value.length);
-    }
-    return value.slice(0, 4) + '*'.repeat(value.length - 8) + value.slice(-4);
   }
 }

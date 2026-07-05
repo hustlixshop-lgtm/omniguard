@@ -1,15 +1,15 @@
 import { useState } from 'react'
-import { useTeams, useOrganizationMembers } from '../hooks/useOrganization'
+import { useTeams, useOrganizationMembers, OrgMemberWithProfile } from '../hooks/useOrganization'
 import { useAuth } from '../hooks/useAuth'
 import {
   Users,
   Plus,
-  User,
   Crown,
   Shield,
   Code,
   Eye,
-  Trash2
+  Trash2,
+  Mail,
 } from 'lucide-react'
 
 const roleIcons: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -17,7 +17,7 @@ const roleIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   admin: Shield,
   engineer: Code,
   developer: Users,
-  auditor: Eye
+  auditor: Eye,
 }
 
 const roleLabels: Record<string, string> = {
@@ -25,7 +25,7 @@ const roleLabels: Record<string, string> = {
   admin: 'Administrator',
   engineer: 'Security Engineer',
   developer: 'Developer',
-  auditor: 'Auditor'
+  auditor: 'Auditor',
 }
 
 export function Teams() {
@@ -80,6 +80,7 @@ export function Teams() {
         <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
           <Users className="w-5 h-5 text-secondary-400" />
           Organization Members
+          <span className="ml-auto text-sm font-normal text-secondary-500">{members.length} member{members.length !== 1 ? 's' : ''}</span>
         </h2>
         {members.length === 0 ? (
           <div className="text-center py-8 text-secondary-500">
@@ -88,34 +89,9 @@ export function Teams() {
           </div>
         ) : (
           <div className="grid gap-3">
-            {members.map((member) => {
-              const RoleIcon = roleIcons[member.role] || User
-              return (
-                <div key={member.id} className="flex items-center gap-4 p-4 bg-secondary-700/30 rounded-lg hover:bg-secondary-700/50 transition-colors">
-                  <div className="w-10 h-10 bg-secondary-700 rounded-lg flex items-center justify-center text-secondary-300 font-medium">
-                    {member.role === 'owner' ? (
-                      <Crown className="w-5 h-5 text-warning-400" />
-                    ) : (
-                      <span className="text-lg">{member.user_id.slice(0, 2).toUpperCase()}</span>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-secondary-100 font-medium">User ID: {member.user_id.slice(0, 8)}...</p>
-                    <p className="text-secondary-500 text-sm">
-                      Joined {member.joined_at ? new Date(member.joined_at).toLocaleDateString() : 'Pending'}
-                    </p>
-                  </div>
-                  <span className={`badge flex items-center gap-1.5 ${
-                    member.role === 'owner' ? 'bg-warning-500/20 text-warning-400' :
-                    member.role === 'admin' ? 'bg-primary-500/20 text-primary-400' :
-                    'bg-secondary-600 text-secondary-300'
-                  }`}>
-                    <RoleIcon className="w-3 h-3" />
-                    {roleLabels[member.role] || member.role}
-                  </span>
-                </div>
-              )
-            })}
+            {members.map((member) => (
+              <MemberRow key={member.id} member={member} />
+            ))}
           </div>
         )}
       </div>
@@ -167,13 +143,13 @@ export function Teams() {
         <h2 className="text-xl font-semibold text-white mb-4">Role Permissions</h2>
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
           {Object.entries(roleLabels).map(([key, label]) => {
-            const Icon = roleIcons[key]
+            const Icon = roleIcons[key] || Users
             const permissions: Record<string, string[]> = {
-              owner: ['Full access', 'Billing', 'Delete organization', 'Manage all settings'],
+              owner: ['Full access', 'Billing management', 'Delete organization', 'All settings'],
               admin: ['Manage repositories', 'Manage integrations', 'Invite members', 'Delete repositories'],
               engineer: ['Run scans', 'Edit policies', 'Resolve findings', 'Manage repositories'],
               developer: ['View findings', 'Run scans', 'AI remediation', 'Upload documents'],
-              auditor: ['View-only access', 'Reports', 'Audit logs', 'Dashboards']
+              auditor: ['View-only access', 'Download reports', 'View audit logs', 'View dashboards'],
             }
             return (
               <div key={key} className="p-4 bg-secondary-700/30 rounded-lg">
@@ -184,9 +160,8 @@ export function Teams() {
                 <ul className="text-secondary-500 space-y-1">
                   {permissions[key]?.map((perm, i) => (
                     <li key={i} className="flex items-center gap-1.5">
-                      <span className={`w-1 h-1 rounded-full ${
-                        key === 'owner' ? 'bg-warning-400' :
-                        key === 'admin' ? 'bg-primary-400' : 'bg-secondary-500'
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        key === 'owner' ? 'bg-warning-400' : key === 'admin' ? 'bg-primary-400' : 'bg-secondary-500'
                       }`} />
                       {perm}
                     </li>
@@ -201,7 +176,7 @@ export function Teams() {
       {/* Create Team Modal */}
       {showCreateTeam && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateTeam(false)}>
-          <div className="card-elevated p-6 w-full max-w-md animate-slide-up" onClick={e => e.stopPropagation()}>
+          <div className="card-elevated p-6 w-full max-w-md animate-slide-up" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-xl font-semibold text-secondary-100 mb-6">Create Team</h2>
             <div className="space-y-4">
               <div>
@@ -235,6 +210,46 @@ export function Teams() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function MemberRow({ member }: { member: OrgMemberWithProfile }) {
+  const RoleIcon = roleIcons[member.role] || Users
+  const displayName = member.profile
+    ? [member.profile.first_name, member.profile.last_name].filter(Boolean).join(' ') || member.profile.email
+    : member.user_id.slice(0, 8) + '...'
+  const initials = member.profile
+    ? (member.profile.first_name?.[0] || member.profile.email[0] || '?').toUpperCase()
+    : '?'
+
+  return (
+    <div className="flex items-center gap-4 p-4 bg-secondary-700/30 rounded-lg hover:bg-secondary-700/50 transition-colors">
+      <div className="w-10 h-10 bg-secondary-700 rounded-lg flex items-center justify-center text-secondary-300 font-medium text-sm flex-shrink-0">
+        {member.role === 'owner' ? <Crown className="w-5 h-5 text-warning-400" /> : initials}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-secondary-100 font-medium truncate">{displayName}</p>
+        {member.profile?.email && displayName !== member.profile.email && (
+          <p className="text-secondary-500 text-xs flex items-center gap-1 truncate">
+            <Mail className="w-3 h-3" />
+            {member.profile.email}
+          </p>
+        )}
+        <p className="text-secondary-600 text-xs">
+          {member.joined_at ? `Joined ${new Date(member.joined_at).toLocaleDateString()}` : 'Pending invitation'}
+        </p>
+      </div>
+      <span
+        className={`badge flex items-center gap-1.5 ${
+          member.role === 'owner' ? 'bg-warning-500/20 text-warning-400 border-warning-500/30' :
+          member.role === 'admin' ? 'bg-primary-500/20 text-primary-400 border-primary-500/30' :
+          'bg-secondary-600 text-secondary-300'
+        }`}
+      >
+        <RoleIcon className="w-3 h-3" />
+        {roleLabels[member.role] || member.role}
+      </span>
     </div>
   )
 }

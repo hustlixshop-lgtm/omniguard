@@ -7,6 +7,15 @@ type Organization = Tables<'organizations'>
 type Team = Tables<'teams'>
 type OrgMember = Tables<'organization_members'>
 
+export interface OrgMemberWithProfile extends OrgMember {
+  profile?: {
+    first_name: string | null
+    last_name: string | null
+    email: string
+    avatar_url: string | null
+  }
+}
+
 export function useOrganizations() {
   const { user, currentOrganizationId } = useAuth()
   const [organizations, setOrganizations] = useState<Organization[]>([])
@@ -45,18 +54,11 @@ export function useOrganizations() {
 
     const { data, error: createError } = await supabase
       .from('organizations')
-      .insert({
-        name,
-        slug,
-        plan: 'free',
-        settings: {}
-      })
+      .insert({ name, slug, plan: 'free', settings: {} })
       .select()
       .single()
 
-    if (createError) {
-      return { data: null, error: createError.message }
-    }
+    if (createError) return { data: null, error: createError.message }
 
     if (data) {
       await supabase.from('organization_members').insert({
@@ -64,7 +66,7 @@ export function useOrganizations() {
         user_id: user!.id,
         role: 'owner',
         status: 'active',
-        joined_at: new Date().toISOString()
+        joined_at: new Date().toISOString(),
       })
     }
 
@@ -80,27 +82,24 @@ export function useOrganizations() {
       .select()
       .single()
 
-    if (updateError) {
-      return { data: null, error: updateError.message }
-    }
-
+    if (updateError) return { data: null, error: updateError.message }
     await fetchOrganizations()
     return { data, error: null }
   }
 
   return {
     organizations,
-    currentOrganization: organizations.find(o => o.id === currentOrganizationId) || null,
+    currentOrganization: organizations.find((o) => o.id === currentOrganizationId) || null,
     loading,
     error,
     createOrganization,
     updateOrganization,
-    refetch: fetchOrganizations
+    refetch: fetchOrganizations,
   }
 }
 
 export function useOrganizationMembers(organizationId: string | null) {
-  const [members, setMembers] = useState<OrgMember[]>([])
+  const [members, setMembers] = useState<OrgMemberWithProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -113,28 +112,43 @@ export function useOrganizationMembers(organizationId: string | null) {
 
     const fetchMembers = async () => {
       setLoading(true)
+
+      // Fetch members + their profiles in a single joined query
       const { data, error: fetchError } = await supabase
         .from('organization_members')
-        .select('*')
+        .select(`
+          *,
+          user_profiles!inner(first_name, last_name, email, avatar_url)
+        `)
         .eq('organization_id', organizationId)
         .order('created_at', { ascending: true })
 
       if (fetchError) {
         setError(fetchError.message)
-      } else {
-        setMembers(data || [])
+        setLoading(false)
+        return
       }
+
+      const enriched: OrgMemberWithProfile[] = (data || []).map((row) => ({
+        id: row.id,
+        organization_id: row.organization_id,
+        user_id: row.user_id,
+        role: row.role,
+        invited_by: row.invited_by,
+        invited_at: row.invited_at,
+        joined_at: row.joined_at,
+        status: row.status,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        profile: row.user_profiles as OrgMemberWithProfile['profile'],
+      }))
+
+      setMembers(enriched)
       setLoading(false)
     }
 
     fetchMembers()
   }, [organizationId])
-
-  const inviteMember = async (_email: string, _role: string) => {
-    // Note: In a real app, this would send an invitation email
-    // For now, we'll just add the user if they exist
-    return { error: 'Invitation flow requires email service integration' }
-  }
 
   const updateMemberRole = async (memberId: string, role: string) => {
     const { error: updateError } = await supabase
@@ -142,11 +156,8 @@ export function useOrganizationMembers(organizationId: string | null) {
       .update({ role })
       .eq('id', memberId)
 
-    if (updateError) {
-      return { error: updateError.message }
-    }
-
-    setMembers(members.map(m => m.id === memberId ? { ...m, role } : m))
+    if (updateError) return { error: updateError.message }
+    setMembers((prev) => prev.map((m) => (m.id === memberId ? { ...m, role: role as OrgMember['role'] } : m)))
     return { error: null }
   }
 
@@ -156,22 +167,12 @@ export function useOrganizationMembers(organizationId: string | null) {
       .delete()
       .eq('id', memberId)
 
-    if (deleteError) {
-      return { error: deleteError.message }
-    }
-
-    setMembers(members.filter(m => m.id !== memberId))
+    if (deleteError) return { error: deleteError.message }
+    setMembers((prev) => prev.filter((m) => m.id !== memberId))
     return { error: null }
   }
 
-  return {
-    members,
-    loading,
-    error,
-    inviteMember,
-    updateMemberRole,
-    removeMember
-  }
+  return { members, loading, error, updateMemberRole, removeMember }
 }
 
 export function useTeams(organizationId: string | null) {
@@ -194,11 +195,8 @@ export function useTeams(organizationId: string | null) {
         .eq('organization_id', organizationId)
         .order('created_at', { ascending: true })
 
-      if (fetchError) {
-        setError(fetchError.message)
-      } else {
-        setTeams(data || [])
-      }
+      if (fetchError) setError(fetchError.message)
+      else setTeams(data || [])
       setLoading(false)
     }
 
@@ -210,43 +208,21 @@ export function useTeams(organizationId: string | null) {
 
     const { data, error: createError } = await supabase
       .from('teams')
-      .insert({
-        organization_id: organizationId,
-        name,
-        description
-      })
+      .insert({ organization_id: organizationId, name, description })
       .select()
       .single()
 
-    if (createError) {
-      return { data: null, error: createError.message }
-    }
-
-    if (data) {
-      setTeams([...teams, data])
-    }
+    if (createError) return { data: null, error: createError.message }
+    if (data) setTeams((prev) => [...prev, data])
     return { data, error: null }
   }
 
   const deleteTeam = async (teamId: string) => {
-    const { error: deleteError } = await supabase
-      .from('teams')
-      .delete()
-      .eq('id', teamId)
-
-    if (deleteError) {
-      return { error: deleteError.message }
-    }
-
-    setTeams(teams.filter(t => t.id !== teamId))
+    const { error: deleteError } = await supabase.from('teams').delete().eq('id', teamId)
+    if (deleteError) return { error: deleteError.message }
+    setTeams((prev) => prev.filter((t) => t.id !== teamId))
     return { error: null }
   }
 
-  return {
-    teams,
-    loading,
-    error,
-    createTeam,
-    deleteTeam
-  }
+  return { teams, loading, error, createTeam, deleteTeam }
 }

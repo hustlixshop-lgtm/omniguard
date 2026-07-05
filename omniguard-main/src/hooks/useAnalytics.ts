@@ -14,17 +14,10 @@ interface DashboardStats {
   lastScanAt: string | null
 }
 
-interface FindingTrend {
-  date: string
-  critical: number
-  high: number
-  medium: number
-  low: number
-}
-
 interface RepositoryHealth {
   id: string
   name: string
+  full_name: string
   riskScore: number
   findingsCount: number
   lastScanAt: string | null
@@ -41,7 +34,7 @@ export function useDashboardStats(organizationId: string | null) {
     openFindings: 0,
     resolvedFindings: 0,
     averageRiskScore: 0,
-    lastScanAt: null
+    lastScanAt: null,
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -57,52 +50,45 @@ export function useDashboardStats(organizationId: string | null) {
       setError(null)
 
       try {
-        // Get repository count
-        const { count: repoCount } = await supabase
-          .from('repositories')
-          .select('*', { count: 'exact', head: true })
-          .eq('organization_id', organizationId)
-          .is('deleted_at', null)
+        const [repoRes, findingsRes, lastScanRes] = await Promise.all([
+          supabase
+            .from('repositories')
+            .select('id', { count: 'exact', head: true })
+            .eq('organization_id', organizationId)
+            .is('deleted_at', null),
+          supabase
+            .from('findings')
+            .select('severity, status, risk_score')
+            .eq('organization_id', organizationId),
+          supabase
+            .from('scans')
+            .select('created_at')
+            .eq('organization_id', organizationId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ])
 
-        // Get finding counts by severity
-        const { data: severityData } = await supabase
-          .from('findings')
-          .select('severity, status, risk_score')
-          .eq('organization_id', organizationId)
-
-        const { data: lastScan } = await supabase
-          .from('scans')
-          .select('created_at')
-          .eq('organization_id', organizationId)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-
-        const critical = severityData?.filter(f => f.severity === 'critical').length || 0
-        const high = severityData?.filter(f => f.severity === 'high').length || 0
-        const medium = severityData?.filter(f => f.severity === 'medium').length || 0
-        const low = severityData?.filter(f => f.severity === 'low').length || 0
-        const open = severityData?.filter(f => f.status === 'open' || f.status === 'assigned' || f.status === 'in_progress').length || 0
-        const resolved = severityData?.filter(f => f.status === 'resolved').length || 0
-
-        const avgRisk = severityData && severityData.length > 0
-          ? severityData.reduce((sum, f) => sum + (f.risk_score || 0), 0) / severityData.length
-          : 0
+        const findingsData = findingsRes.data || []
+        const openStatuses = new Set(['open', 'assigned', 'in_progress'])
 
         setStats({
-          totalRepositories: repoCount || 0,
-          totalFindings: severityData?.length || 0,
-          criticalFindings: critical,
-          highFindings: high,
-          mediumFindings: medium,
-          lowFindings: low,
-          openFindings: open,
-          resolvedFindings: resolved,
-          averageRiskScore: Math.round(avgRisk * 10) / 10,
-          lastScanAt: lastScan?.created_at || null
+          totalRepositories: repoRes.count || 0,
+          totalFindings: findingsData.length,
+          criticalFindings: findingsData.filter((f) => f.severity === 'critical').length,
+          highFindings: findingsData.filter((f) => f.severity === 'high').length,
+          mediumFindings: findingsData.filter((f) => f.severity === 'medium').length,
+          lowFindings: findingsData.filter((f) => f.severity === 'low').length,
+          openFindings: findingsData.filter((f) => openStatuses.has(f.status)).length,
+          resolvedFindings: findingsData.filter((f) => f.status === 'resolved').length,
+          averageRiskScore:
+            findingsData.length > 0
+              ? Math.round((findingsData.reduce((s, f) => s + (f.risk_score || 0), 0) / findingsData.length) * 10) / 10
+              : 0,
+          lastScanAt: lastScanRes.data?.created_at || null,
         })
       } catch (err) {
-        setError('Failed to fetch dashboard stats')
+        setError(err instanceof Error ? err.message : 'Failed to fetch stats')
       } finally {
         setLoading(false)
       }
@@ -114,8 +100,8 @@ export function useDashboardStats(organizationId: string | null) {
   return { stats, loading, error }
 }
 
-export function useFindingTrends(organizationId: string | null, days: number = 30) {
-  const [trends, setTrends] = useState<FindingTrend[]>([])
+export function useFindingTrends(organizationId: string | null, days = 30) {
+  const [trends, setTrends] = useState<Array<{ date: string; critical: number; high: number; medium: number; low: number }>>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -126,7 +112,6 @@ export function useFindingTrends(organizationId: string | null, days: number = 3
 
     const fetchTrends = async () => {
       setLoading(true)
-
       const startDate = new Date()
       startDate.setDate(startDate.getDate() - days)
 
@@ -138,17 +123,12 @@ export function useFindingTrends(organizationId: string | null, days: number = 3
         .order('created_at', { ascending: true })
 
       if (data) {
-        // Group by date
-        const grouped: Record<string, FindingTrend> = {}
-        data.forEach(finding => {
-          const date = new Date(finding.created_at).toISOString().split('T')[0]
-          if (!grouped[date]) {
-            grouped[date] = { date, critical: 0, high: 0, medium: 0, low: 0 }
-          }
-          const key = finding.severity as keyof Omit<FindingTrend, 'date'>
-          if (key in grouped[date]) {
-            grouped[date][key]++
-          }
+        const grouped: Record<string, { date: string; critical: number; high: number; medium: number; low: number }> = {}
+        data.forEach((f) => {
+          const date = new Date(f.created_at).toISOString().split('T')[0]
+          if (!grouped[date]) grouped[date] = { date, critical: 0, high: 0, medium: 0, low: 0 }
+          const key = f.severity as 'critical' | 'high' | 'medium' | 'low'
+          if (key in grouped[date]) grouped[date][key]++
         })
         setTrends(Object.values(grouped))
       }
@@ -161,6 +141,7 @@ export function useFindingTrends(organizationId: string | null, days: number = 3
   return { trends, loading }
 }
 
+// Fixed: single query with grouped counts instead of N+1 per-repo queries
 export function useRepositoryHealth(organizationId: string | null) {
   const [repositories, setRepositories] = useState<RepositoryHealth[]>([])
   const [loading, setLoading] = useState(true)
@@ -174,33 +155,43 @@ export function useRepositoryHealth(organizationId: string | null) {
     const fetchHealth = async () => {
       setLoading(true)
 
-      const { data: repos } = await supabase
-        .from('repositories')
-        .select('id, name, risk_score, last_scan_at')
-        .eq('organization_id', organizationId)
-        .is('deleted_at', null)
-        .order('risk_score', { ascending: false })
+      // Fetch repos + aggregate finding counts in one pass
+      const [reposRes, findingCountsRes] = await Promise.all([
+        supabase
+          .from('repositories')
+          .select('id, name, full_name, risk_score, last_scan_at')
+          .eq('organization_id', organizationId)
+          .is('deleted_at', null)
+          .order('risk_score', { ascending: false })
+          .limit(20),
+        supabase
+          .from('findings')
+          .select('repository_id')
+          .eq('organization_id', organizationId)
+          .in('status', ['open', 'assigned', 'in_progress']),
+      ])
 
-      if (repos) {
-        const healthData: RepositoryHealth[] = await Promise.all(
-          repos.map(async (repo) => {
-            const { count } = await supabase
-              .from('findings')
-              .select('*', { count: 'exact', head: true })
-              .eq('repository_id', repo.id)
-              .in('status', ['open', 'assigned', 'in_progress'])
-
-            return {
-              id: repo.id,
-              name: repo.name,
-              riskScore: repo.risk_score || 0,
-              findingsCount: count || 0,
-              lastScanAt: repo.last_scan_at
-            }
-          })
-        )
-        setRepositories(healthData)
+      if (!reposRes.data) {
+        setLoading(false)
+        return
       }
+
+      // Build count map from the flat findings list
+      const countMap: Record<string, number> = {}
+      for (const f of findingCountsRes.data || []) {
+        countMap[f.repository_id] = (countMap[f.repository_id] || 0) + 1
+      }
+
+      setRepositories(
+        reposRes.data.map((r) => ({
+          id: r.id,
+          name: r.name,
+          full_name: r.full_name,
+          riskScore: r.risk_score || 0,
+          findingsCount: countMap[r.id] || 0,
+          lastScanAt: r.last_scan_at,
+        }))
+      )
       setLoading(false)
     }
 
@@ -210,14 +201,16 @@ export function useRepositoryHealth(organizationId: string | null) {
   return { repositories, loading }
 }
 
-export function useRecentActivity(organizationId: string | null, limit: number = 10) {
-  const [activity, setActivity] = useState<Array<{
-    id: string
-    action: string
-    resource_type: string
-    resource_name: string | null
-    created_at: string
-  }>>([])
+export function useRecentActivity(organizationId: string | null, limit = 10) {
+  const [activity, setActivity] = useState<
+    Array<{
+      id: string
+      action: string
+      resource_type: string
+      resource_name: string | null
+      created_at: string
+    }>
+  >([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -228,7 +221,6 @@ export function useRecentActivity(organizationId: string | null, limit: number =
 
     const fetchActivity = async () => {
       setLoading(true)
-
       const { data } = await supabase
         .from('audit_logs')
         .select('id, action, resource_type, resource_name, created_at')
@@ -244,4 +236,38 @@ export function useRecentActivity(organizationId: string | null, limit: number =
   }, [organizationId, limit])
 
   return { activity, loading }
+}
+
+export function useUnreadNotifications(userId: string | null) {
+  const [unreadCount, setUnreadCount] = useState(0)
+
+  useEffect(() => {
+    if (!userId) return
+
+    const fetchCount = async () => {
+      const { count } = await supabase
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .eq('read', false)
+      setUnreadCount(count || 0)
+    }
+
+    fetchCount()
+
+    // Subscribe to new notifications
+    const channel = supabase
+      .channel(`notifications:${userId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, () => {
+        setUnreadCount((c) => c + 1)
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, () => {
+        fetchCount()
+      })
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [userId])
+
+  return unreadCount
 }
